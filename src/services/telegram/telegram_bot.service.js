@@ -356,9 +356,13 @@ class TelegramBotService {
       await this.logicForLogout(callbackQuery.message, botId);
       return;
     }
+    logger.info(`calendarEventRepository ${JSON.stringify(moment(res, 'DD-MM-YYYY').format())}`);
+    logger.info(`user ${JSON.stringify(user)}`);
     const events = await calendarEventRepository.getCalendarEventByEqInstaller(user, {
       startDate: moment(res, 'DD-MM-YYYY').format(),
     });
+    logger.info(`events ${JSON.stringify(events)}`);
+
     if (!events.length) {
       logger.info(`send to bot ${JSON.stringify(moment().format())}`);
       await this.sendMessage(botId, chatId, 'data is empty!');
