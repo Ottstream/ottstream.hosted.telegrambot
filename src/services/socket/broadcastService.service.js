@@ -25,6 +25,15 @@ class BroadcastService {
 
     await this.eventBusService.send('socket-stream', { userId, scope, data });
   }
+
+  static async broadcastToAppointment(data) {
+    // eslint-disable-next-line global-require
+    const serviceCollection = require('../service_collection');
+    this.eventBusService = serviceCollection.getService('publisherEventBusService');
+    if (!this.eventBusService.isConnected) await this.eventBusService.connect();
+
+    await this.eventBusService.send('telegram-bot', data);
+  }
 }
 
 module.exports = BroadcastService;
