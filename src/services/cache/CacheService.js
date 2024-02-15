@@ -1,8 +1,8 @@
-const RedisStore = require('./redis.service');
+const serviceCollection = require('../service_collection');
 
 class CacheService {
   static getCacheStore() {
-    return new RedisStore();
+    return serviceCollection.getService('redisCacheStore');
   }
 
   static async hasKey(key) {

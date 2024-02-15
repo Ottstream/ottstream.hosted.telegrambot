@@ -1,5 +1,5 @@
 const axios = require('axios');
-const logger = require('../utils/logger');
+const logger = require('../../utils/logger/logger');
 
 class TelegramService {
   // eslint-disable-next-line no-unused-vars

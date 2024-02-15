@@ -1,8 +1,9 @@
 // schedule to generate invoices
 const redis = require('redis');
 const queue = require('queue');
-const logger = require('../utils/logger');
-const config = require('../config/env');
+const logger = require('../../utils/logger/logger');
+const config = require('../../config');
+// const {balanceRepository} = require('../../repository');
 
 class EventBusService {
   constructor() {
@@ -24,13 +25,13 @@ class EventBusService {
 
   async connect() {
     const self = this;
-    const url = `redis://${config.redis.host}:${config.redis.port}`;
+    const url = `redis://${config.getConfig().redis.host}:${config.getConfig().redis.port}`;
     this.subClient = redis.createClient({
       url,
-      password: config.redis.password,
+      password: config.getConfig().redis.password,
     });
     this.subClient.connect();
-    logger.info(`EventBusService: connecting to redis ${config.redis.host}:${config.redis.port}`);
+    logger.info(`EventBusService: connecting to redis ${config.getConfig().redis.host}:${config.getConfig().redis.port}`);
 
     return new Promise((resolve) => {
       // Handle successful connection

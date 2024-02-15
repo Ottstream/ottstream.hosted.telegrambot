@@ -1,24 +1,12 @@
-// schedule to generate invoices 
-const logger = require('../utils/logger');
+// schedule to generate invoices
 const queue = require('queue');
-
-const serviceCollection = require('../services/service_collection'); //! meed to move
-const TwilioService = require('../services/twilio.service');
+const logger = require('../../../utils/logger/logger');
+const serviceCollection = require('../../../services/service_collection');
 
 class HostedEventBusProcessor {
   constructor() {
     this.eventBusService = serviceCollection.getService('receiverEventBusService');
     this.webhookQueue = queue({ results: [], autostart: true, timeout: 0, concurrency: 1 });
-  }
-
-  addToQueue(data) {
-    logger.info(`twilioarrived 1`);
-    if (this.webhookQueue && this.webhookQueue.length) {
-      logger.warn(`twiliowebhook in queue: please wait`);
-    } else {
-      logger.warn(`twiliowebhook have been added to queue`);
-    }
-    this.webhookQueue.push((cb) => TwilioService.processTwilioWebhook(data, cb));
   }
 
   async processSocketStreams() {

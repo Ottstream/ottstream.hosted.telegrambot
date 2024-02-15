@@ -1,12 +1,12 @@
 {
   "name": "ottstream.hosted.telegrambot",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "ottstream.hosted.telegrambot",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "nodemon src/server.js",
-    "start": "node src/server.js"
+    "start": "pm2 start ecosystem.config.json --no-daemon",
+    "dev": "cross-env NODE_ENV=development nodemon --inspect src/index.js",
+    "hosted": "cross-env NODE_ENV=development nodemon --inspect src/hosted.js"
   },
   "keywords": [],
   "author": "",
@@ -21,7 +21,8 @@
     "node-telegram-bot-api": "^0.64.0",
     "nodemon": "^3.0.3",
     "os": "^0.1.2",
-    "ottstream.dataaccess": "^1.0.6",
+    "ottstream.dataaccess": "^1.1.35",
+    "ottstream.services.config": "^1.0.9",
     "queue": "^6.0.2",
     "redis": "^4.6.13",
     "telegram-inline-calendar": "^1.7.0",

@@ -1,6 +1,6 @@
 const redis = require('redis');
-const logger = require('../utils/logger');
-const config = require('../config/env');
+const logger = require('../../utils/logger/logger');
+const config = require('../../config');
 
 class RedisCache {
   constructor() {
@@ -26,13 +26,13 @@ class RedisCache {
     }
 
     self.isConnecting = true;
-    const url = `redis://${config.redis.host}:${config.redis.port}`;
+    const url = `redis://${config.getConfig().redis.host}:${config.getConfig().redis.port}`;
     this.subClient = redis.createClient({
       url,
-      password: config.redis.password,
+      password: config.getConfig().redis.password,
     });
     this.subClient.connect();
-    logger.info(`RedisCache: connecting to redis ${config.redis.host}:${config.redis.port}`);
+    logger.info(`RedisCache: connecting to redis ${config.getConfig().redis.host}:${config.getConfig().redis.port}`);
 
     return new Promise((resolve) => {
       // Handle successful connection

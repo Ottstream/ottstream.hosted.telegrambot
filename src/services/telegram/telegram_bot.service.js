@@ -2,9 +2,17 @@ const TelegramBot = require('node-telegram-bot-api');
 const Calendar = require('telegram-inline-calendar');
 const axios = require('axios');
 const moment = require('moment');
-const logger = require('../utils/logger');
-const { telegramBotRepository, userRepository, calendarRepository, ottProviderConversationProviderRepository } = require('ottstream.dataaccess').repositories;
-const config = require('../config/env');
+const logger = require('../../utils/logger/logger');
+const {
+  telegramBotRepository,
+  botMessagesRepository,
+  userRepository,
+  ottProviderConversationProviderRepository,
+  calendarEventRepository,
+} = require('../../repository');
+
+const config = require('../../config');
+const BroadcastService = require('../socket/broadcastService.service');
 
 class TelegramBotService {
   constructor() {
@@ -13,34 +21,58 @@ class TelegramBotService {
   }
 
   async processTelegramWebhook(body) {
-    logger.info(`telegramBotService:processTelegramWebhook()START time: ${new Date().getTime()} ms ${body}`);
+    logger.info(`telegramBotService:processTelegramWebhook()START time: ${new Date().getTime()} ms ${JSON.stringify(body)}`);
+
+    if (body.disable) {
+      await this.clearHistory(body);
+      return;
+    }
     // eslint-disable-next-line camelcase
     const { token, message, callback_query } = body;
     const text = message?.text;
     const data = callback_query?.data;
+    const lastMessageId = message?.message_id || callback_query?.message.message_id;
+
     // eslint-disable-next-line camelcase
     const fromId = callback_query ? callback_query.from.id : message.from.id;
+    // eslint-disable-next-line camelcase
+    const chatId = callback_query ? callback_query?.message?.chat?.id : message?.chat?.id;
+
     const ottProvider = await ottProviderConversationProviderRepository.getList({
       'telegram.authToken': token,
     });
     const botId = `${ottProvider[0].providerId}-${token}`;
+    let messages = await botMessagesRepository.getBotMessageByChatId(chatId);
+    if (messages) {
+      messages = await botMessagesRepository.getBotMessageByChatIdAndPushMessageId(chatId, lastMessageId);
+    } else {
+      messages = await botMessagesRepository.createBotMessage({ chatId, botId }, lastMessageId);
+    }
 
     const botInfo = await TelegramBotService.getBotLocalInfo(botId);
+
     const userInfo = botInfo.users && botInfo.users[fromId] ? botInfo.users[fromId] : null;
 
     let user = null;
-    if (userInfo && userInfo.login) user = await TelegramBotService.getUserInfo(userInfo.login);
+    if (userInfo && userInfo.login) user = await TelegramBotService.getUserInfo(+userInfo.login);
 
+    if (userInfo && userInfo.login && userInfo.loggedIn && !user) {
+      // eslint-disable-next-line camelcase
+      await this.logicForLogout(callback_query || message, botId, 2);
+      return;
+    }
     if (text === '/start') {
       logger.info(`botId: ${botId}`);
       await this.logicForStart(message, botId);
     } else if (data === 'login') {
       await this.logicForLogin(callback_query, botId);
-    } else if (user && !user.accessEnable) {
+    } else if (text === '/logout' && user && !user.accessEnable) {
+      await this.logicForLogout(message, botId);
+    } else if (user && !user.accessEnable && !botInfo.users[fromId].loggedIn) {
       // eslint-disable-next-line no-unused-expressions, camelcase
-      callback_query ? await this.logicForLogout(callback_query, botId, true) : await this.logicForLogout(message, botId);
+      callback_query ? await this.logicForLogout(callback_query, botId, 1) : await this.logicForLogout(message, botId, 1);
       return;
-    } else if (text === '/getapps' && userInfo && userInfo.loggedIn && user.accessEnable) {
+    } else if (text === '/getapps' && userInfo && userInfo.loggedIn && user && user?.accessEnable) {
       await this.logicForGetApps(message, botId);
     } else {
       // eslint-disable-next-line no-unused-expressions, camelcase
@@ -55,19 +87,17 @@ class TelegramBotService {
   async logicForStart(message, botId) {
     const { chat, from } = message;
     logger.info(`logicForStart: ${botId}`);
-    const { bot } = this.bots[botId];
     const chatId = chat.id;
     let loggedIn = false;
     const botLocalInfo = await TelegramBotService.getBotLocalInfo(botId);
     const fromId = from.id;
-    await TelegramBotService.updateBotLocalInfo(botId, botLocalInfo);
     if (!botLocalInfo.users || !botLocalInfo.users[fromId]) {
       if (!botLocalInfo.users) botLocalInfo.users = {};
       botLocalInfo.users[fromId] = {
         loggedIn: false,
         fromId,
+        chatId,
       };
-      this.bots[botId] = botLocalInfo;
       await TelegramBotService.updateBotLocalInfo(botId, botLocalInfo);
     } else {
       const userInfo = botLocalInfo.users[fromId];
@@ -75,45 +105,45 @@ class TelegramBotService {
     }
     if (loggedIn) {
       botLocalInfo.users[fromId].state = null;
+      botLocalInfo.users[fromId].chatId = chatId;
+
       await TelegramBotService.updateBotLocalInfo(botId, botLocalInfo);
       logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-      await bot.sendMessage(chatId, 'Welcome back!');
+      await this.sendMessage(botId, chatId, 'Welcome back!');
     } else {
       botLocalInfo.users[fromId].state = null;
+      botLocalInfo.users[fromId].chatId = chatId;
       await TelegramBotService.updateBotLocalInfo(botId, botLocalInfo);
-      const opts = {
-        reply_markup: {
-          inline_keyboard: [[{ text: 'Login', callback_data: 'login' }]],
-        },
-      };
+      const opts = [[{ text: 'Login', callback_data: 'login' }]];
 
       logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-      await bot.sendMessage(chatId, 'Welcome! Please log in.', opts);
+      await this.sendMessage(botId, chatId, 'Welcome! Please log in.', opts);
     }
   }
 
   async logicForLogin(callbackQuery, botId) {
     const { from, message } = callbackQuery;
     const { chat } = message;
-    const { bot } = this.bots[botId];
     const botLocalInfo = await TelegramBotService.getBotLocalInfo(botId);
-    // eslint-disable-next-line no-unused-expressions
-    botLocalInfo.users
-      ? (botLocalInfo.users[from.id].state = 'waitingLogin')
-      : (botLocalInfo.users = {
-          [from.id]: {
-            state: 'waitingLogin',
-          },
-        });
+    if (botLocalInfo.users) {
+      botLocalInfo.users[from.id] = {};
+      botLocalInfo.users[from.id].state = 'waitingLogin';
+      // botLocalInfo.users[from.id].userId = null;
+    } else {
+      botLocalInfo.users = {
+        [from.id]: {
+          state: 'waitingLogin',
+        },
+      };
+    }
     await TelegramBotService.updateBotLocalInfo(botId, botLocalInfo);
     logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-    await bot.sendMessage(chat.id, 'type your login please!');
+    await this.sendMessage(botId, chat.id, 'type your login please!');
   }
 
   // eslint-disable-next-line class-methods-use-this
-  async logicForLogout(callbackQuery, botId, flag = false) {
-    const { from, message } = callbackQuery;
-    const { bot } = this.bots[botId];
+  async logicForLogout(callbackQuery, botId, flag = 0) {
+    const { from, message, chat } = callbackQuery;
     const botLocalInfo = await TelegramBotService.getBotLocalInfo(botId);
     const fromId = from.id;
     botLocalInfo.users[fromId].loggedIn = false;
@@ -121,12 +151,15 @@ class TelegramBotService {
     await TelegramBotService.updateBotLocalInfo(botId, botLocalInfo);
     const opts = [[{ text: 'Login', callback_data: 'login' }]];
     logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-    const text = flag ? 'You are blocked!' : 'You have been logged out. Thank you for using the bot!';
-    await bot.sendMessage(message.chat.id, text, {
-      reply_markup: {
-        inlineKeyboard: opts,
-      },
-    });
+
+    const text =
+      // eslint-disable-next-line no-nested-ternary
+      flag === 1
+        ? 'You are blocked!'
+        : flag === 2
+        ? 'Your Login and Password changed!'
+        : 'You have been logged out. Thank you for using the bot!';
+    await this.sendMessage(botId, chat?.id || message?.chat?.id, text, opts);
   }
 
   async logicForGetApps(message, botId) {
@@ -142,11 +175,11 @@ class TelegramBotService {
   async callbacks(callbackQuery, botId) {
     const message = callbackQuery?.message || callbackQuery;
     const text = callbackQuery?.text || callbackQuery?.data;
-    const { bot } = this.bots[botId];
+    const chat = callbackQuery?.chat || callbackQuery?.message.chat;
     const fromId = callbackQuery?.from ? callbackQuery?.from.id : message?.from.id;
     const botLocalInfo = await TelegramBotService.getBotLocalInfo(botId);
     const userInfo = botLocalInfo.users[fromId];
-    if (!userInfo.loggedIn) {
+    if (userInfo && !userInfo.loggedIn) {
       const login = botLocalInfo.users[fromId].state === 'waitingLogin' ? text.toString() : botLocalInfo.users[fromId].login;
       const user = await TelegramBotService.getUserInfo(login);
 
@@ -156,32 +189,29 @@ class TelegramBotService {
           botLocalInfo.users[fromId].state = 'waitingPassword';
           await TelegramBotService.updateBotLocalInfo(botId, botLocalInfo);
           logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-          await bot.sendMessage(message.chat.id, 'enter password pls');
+          await this.sendMessage(botId, message.chat.id, 'enter password pls');
         } else {
           logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-          await bot.sendMessage(message.chat.id, "such login doesn't exist!");
+          await this.sendMessage(botId, message.chat.id, "such login doesn't exist!");
         }
       } else if (botLocalInfo.users[fromId].state === 'waitingPassword') {
         if (message.text.toString() === user.telegramPassword.toString()) {
           botLocalInfo.users[fromId].password = message.text;
           botLocalInfo.users[fromId].state = null;
           botLocalInfo.users[fromId].loggedIn = true;
+          botLocalInfo.users[fromId].chatId = chat.id;
           botLocalInfo.users[fromId].userId = user._id || null;
           await TelegramBotService.updateBotLocalInfo(botId, botLocalInfo);
           logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-          await bot.sendMessage(message.chat.id, 'login success.');
+          await this.sendMessage(botId, message.chat.id, 'login success.');
         } else {
           logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-          await bot.sendMessage(message.chat.id, 'wrong password!');
+          await this.sendMessage(botId, message.chat.id, 'wrong password!');
         }
       } else if (!botLocalInfo.users[fromId].loggedIn) {
-        const opts = {
-          reply_markup: {
-            inline_keyboard: [[{ text: 'Login', callback_data: 'login' }]],
-          },
-        };
+        const opts = [[{ text: 'Login', callback_data: 'login' }]];
         logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-        await bot.sendMessage(message.chat.id, 'please login to continue', opts);
+        await this.sendMessage(botId, message.chat.id, 'please login to continue', opts);
       }
     } else {
       await this.getAppsCallback(callbackQuery, botId);
@@ -227,14 +257,14 @@ class TelegramBotService {
           case 'no-logout':
             bot.deleteMessage(chatId, message.message_id);
             logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-            await bot.sendMessage(chatId, `Logout canceled!`);
+            await this.sendMessage(botId, chatId, `Logout canceled!`);
             break;
           case 'no-process':
           case 'no-cancel':
           case 'no-completed':
             bot.deleteMessage(chatId, message.message_id);
             logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-            await bot.sendMessage(chatId, `status change canceled!`);
+            await this.sendMessage(botId, chatId, `status change canceled!`);
             break;
           case 'button':
             await this.appointmentClick(botId, chatId, action, fromId);
@@ -261,7 +291,7 @@ class TelegramBotService {
             break;
           case 'yes-completed':
             bot.deleteMessage(chatId, message.message_id);
-            await this.openCompleteButtons(action, botId, chatId, fromId, bot);
+            await this.openCompleteButtons(action, botId, chatId, fromId);
             break;
           case 'paid':
             await this.writePriceMsg(action, botId, chatId, fromId);
@@ -275,65 +305,45 @@ class TelegramBotService {
             break;
           default:
             logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-            await bot.sendMessage(chatId, `available commands ${availableCommands.toString()}`);
+            await this.sendMessage(botId, chatId, `available commands ${availableCommands.toString()}`);
             break;
         }
       } else {
         logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-        await bot.sendMessage(chatId, `available commands ${availableCommands.toString()}`);
+        await this.sendMessage(botId, chatId, `available commands ${availableCommands.toString()}`);
       }
     } else {
-      const opts = {
-        reply_markup: {
-          inline_keyboard: [[{ text: 'Login', callback_data: 'login' }]],
-        },
-      };
+      const opts = [[{ text: 'Login', callback_data: 'login' }]];
       logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-      await bot.sendMessage(chatId, 'please login to continue', opts);
+      await this.sendMessage(botId, chatId, 'please login to continue', opts);
     }
   }
 
   async yesOrNo(action, botId, chatId) {
-    const { bot } = this.bots[botId];
-    const nestedKeyboard = {
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: 'Yes', callback_data: `yes-${action[0]}_${action[1]}` },
-            { text: 'No', callback_data: `no-${action[0]}_${action[1]}` },
-          ],
-        ],
-      },
-    };
+    const nestedKeyboard = [
+      [
+        { text: 'Yes', callback_data: `yes-${action[0]}_${action[1]}` },
+        { text: 'No', callback_data: `no-${action[0]}_${action[1]}` },
+      ],
+    ];
     logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-    await bot.sendMessage(chatId, 'Please Confirm!', {
-      parse_mode: 'Markdown',
-      reply_markup: nestedKeyboard.reply_markup,
-    });
+    await this.sendMessage(botId, chatId, 'Please Confirm!', nestedKeyboard);
   }
 
   // eslint-disable-next-line class-methods-use-this
   async yesOrNoForLogout(botId, chatId) {
-    const { bot } = this.bots[botId];
-    const nestedKeyboard = {
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: 'Yes', callback_data: `yes-logout` },
-            { text: 'No', callback_data: `no-logout` },
-          ],
-        ],
-      },
-    };
+    const nestedKeyboard = [
+      [
+        { text: 'Yes', callback_data: `yes-logout` },
+        { text: 'No', callback_data: `no-logout` },
+      ],
+    ];
     logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-    await bot.sendMessage(chatId, 'Please Confirm!', {
-      parse_mode: 'Markdown',
-      reply_markup: nestedKeyboard.reply_markup,
-    });
+    await this.sendMessage(botId, chatId, 'Please Confirm!', nestedKeyboard);
   }
 
   async getEventList(action, botId, chatId, fromId, callbackQuery) {
-    const { bot, calendar } = this.bots[botId];
+    const { calendar } = this.bots[botId];
     const botLocalInfo = await TelegramBotService.getBotLocalInfo(botId);
     const validDate = moment(action[1], 'DD-MM-YYYY').isValid();
     const res = calendar.clickButtonCalendar(callbackQuery);
@@ -346,12 +356,12 @@ class TelegramBotService {
       await this.logicForLogout(callbackQuery.message, botId);
       return;
     }
-    const events = await calendarRepository.getCalendarEventByEqInstaller(user, {
+    const events = await calendarEventRepository.getCalendarEventByEqInstaller(user, {
       startDate: moment(res, 'DD-MM-YYYY').format(),
     });
     if (!events.length) {
       logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-      await bot.sendMessage(chatId, 'data is empty!');
+      await this.sendMessage(botId, chatId, 'data is empty!');
       return;
     }
     // eslint-disable-next-line no-restricted-syntax
@@ -367,7 +377,7 @@ class TelegramBotService {
         .format('YYYY-MM-DDTHH:mm:ss.SSS');
       const flag =
         // eslint-disable-next-line no-nested-ternary
-        event?.state === 'process' ? '🔵' : event?.state === 'completed' ? '🟢' : event?.state === 'cancel' ? '🔴' : '⚪';
+        event?.state === 'process' ? '🟡' : event?.state === 'completed' ? '🟢' : event?.state === 'cancel' ? '🔴' : '⚪';
       const text = `${flag} ${moment(startDate, 'YYYY-MM-DDTHH:mm:ss.SSS').format('h:mm a')}
 ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
 
@@ -380,15 +390,23 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
 
       try {
         // eslint-disable-next-line no-await-in-loop
-        await this.sendMessage(botId, chatId, text, inlineKeyboard);
+        const result = await this.sendMessageWithAPI(botId, chatId, text, inlineKeyboard);
+        if (result.status) {
+          // eslint-disable-next-line no-await-in-loop
+          await botMessagesRepository.getBotMessageByChatIdAndPushMessageId(chatId, result.messageId);
+        }
       } catch (error) {
         // eslint-disable-next-line no-await-in-loop
-        await this.sendMessage(botId, chatId, text, inlineKeyboard);
+        const result = await this.sendMessageWithAPI(botId, chatId, text, inlineKeyboard);
+        if (result.status) {
+          // eslint-disable-next-line no-await-in-loop
+          await botMessagesRepository.getBotMessageByChatIdAndPushMessageId(chatId, result.messageId);
+        }
       }
     }
   }
 
-  async sendMessage(botId, chatId, text, inlineKeyboard) {
+  async sendMessageWithAPI(botId, chatId, text, inlineKeyboard) {
     try {
       const { bot } = this.bots[botId];
       const response = await axios.post(`https://api.telegram.org/bot${bot.token}/sendMessage`, {
@@ -400,7 +418,10 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
             }
           : {},
       });
-      return !!response;
+      return {
+        status: !!response,
+        messageId: response?.data?.result?.message_id,
+      };
     } catch (error) {
       logger.error(`telegramBot sendMessage: ${error.message}`);
       return false;
@@ -408,23 +429,22 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
   }
 
   async writePriceMsg(action, botId, chatId, fromId) {
-    const { bot } = this.bots[botId];
     const text = 'Please write price!';
     const botLocalInfo = await TelegramBotService.getBotLocalInfo(botId);
     botLocalInfo.users[fromId].state = `${action[0]}_${action[1]}_writePrice`;
     await TelegramBotService.updateBotLocalInfo(botId, botLocalInfo);
     logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-    await bot.sendMessage(chatId, text);
+    await this.sendMessage(botId, chatId, text);
   }
 
-  async openCompleteButtons(action, botId, chatId, fromId, bot) {
+  async openCompleteButtons(action, botId, chatId, fromId) {
     const [{ event, status }, botLocalInfo] = await Promise.all([
       this.checkEventStatus(action[1]),
       TelegramBotService.getBotLocalInfo(botId),
     ]);
     if (!status) {
       logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-      await bot.sendMessage(chatId, `This event already ${event?.state}`);
+      await this.sendMessage(botId, chatId, `This event already ${event?.state}`);
       return;
     }
     if (event?.paymentType === 'unpaid') {
@@ -437,30 +457,22 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
     let text = 'Please write price!';
     if (event?.paymentType === 'pending') {
       text = 'Choose option';
-      nestedKeyboard = {
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: 'Paid', callback_data: `paid_${action[1]}` },
-              { text: 'Free', callback_data: `free_${action[1]}` },
-            ],
-          ],
-        },
-      };
+      nestedKeyboard = [
+        [
+          { text: 'Paid', callback_data: `paid_${action[1]}` },
+          { text: 'Free', callback_data: `free_${action[1]}` },
+        ],
+      ];
       logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-      await bot.sendMessage(chatId, text, {
-        parse_mode: 'Markdown',
-        reply_markup: nestedKeyboard.reply_markup,
-      });
+      await this.sendMessage(botId, chatId, text, nestedKeyboard);
     } else {
       await this.changeAppointmentStatusAndPrice(action, botId, chatId, fromId, event?.paymentPrice);
     }
   }
 
   async appointmentClick(botId, chatId, action, fromId) {
-    const { bot } = this.bots[botId];
     const [event, botLocalInfo] = await Promise.all([
-      calendarRepository.getCalendarEventById(action[1]),
+      calendarEventRepository.getCalendarEventById(action[1]),
       TelegramBotService.getBotLocalInfo(botId),
     ]);
 
@@ -475,53 +487,37 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
     const nestedKeyboard =
       // eslint-disable-next-line no-nested-ternary
       event?.state === 'completed' || event?.state === 'cancel' || nowDay > getDay
-        ? {
-            reply_markup: {
-              inline_keyboard: [[{ text: 'Info', callback_data: `info_${action[1]}` }]],
-            },
-          }
+        ? [[{ text: 'Info', callback_data: `info_${action[1]}` }]]
         : event?.state === 'process'
-        ? {
-            reply_markup: {
-              inline_keyboard: [
-                [{ text: 'Info', callback_data: `info_${action[1]}` }],
-                [
-                  { text: 'Completed', callback_data: `completed_${action[1]}` },
-                  { text: 'Cancel', callback_data: `cancel_${action[1]}` },
-                ],
-              ],
-            },
-          }
-        : {
-            reply_markup: {
-              inline_keyboard: [
-                [
-                  { text: 'Info', callback_data: `info_${action[1]}` },
-                  { text: 'Process', callback_data: `process_${action[1]}` },
-                ],
-                [
-                  { text: 'Completed', callback_data: `completed_${action[1]}` },
-                  { text: 'Cancel', callback_data: `cancel_${action[1]}` },
-                ],
-              ],
-            },
-          };
+        ? [
+            [{ text: 'Info', callback_data: `info_${action[1]}` }],
+            [
+              { text: 'Completed', callback_data: `completed_${action[1]}` },
+              { text: 'Cancel', callback_data: `cancel_${action[1]}` },
+            ],
+          ]
+        : [
+            [
+              { text: 'Info', callback_data: `info_${action[1]}` },
+              { text: 'Process', callback_data: `process_${action[1]}` },
+            ],
+            [
+              { text: 'Completed', callback_data: `completed_${action[1]}` },
+              { text: 'Cancel', callback_data: `cancel_${action[1]}` },
+            ],
+          ];
     const address = `
   ${moment(startDate.format('YYYY-MM-DDTHH:mm:ss.SSS'), 'YYYY-MM-DDTHH:mm:ss.SSS').format('h:mm a')}\n${
       event?.customerAddress?.address
     }\n${event?.customerAddress?.city} ${event?.customerAddress?.province}
   ${event?.customerAddress?.zip}`;
     logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-    await bot.sendMessage(chatId, address, {
-      parse_mode: 'Markdown',
-      reply_markup: nestedKeyboard.reply_markup,
-    });
+    await this.sendMessage(botId, chatId, address, nestedKeyboard);
   }
 
   async appointmentInfo(botId, chatId, fromId, action, botLocalInfo) {
     if (botLocalInfo.users[fromId].state === '/getapps') {
-      const { bot } = this.bots[botId];
-      const event = await calendarRepository.getCalendarEventById(action[1]);
+      const event = await calendarEventRepository.getCalendarEventById(action[1]);
       const user = await TelegramBotService.getUserInfo(botLocalInfo.users[fromId].login);
       const timezoneString = user.provider.timezone;
 
@@ -535,42 +531,28 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
       // console.log('messageData: ', messageData, event);
       const nestedKeyboard =
         event?.state !== 'cancel' && event?.state !== 'completed' && nowDay <= getDay
-          ? {
-              reply_markup: {
-                inline_keyboard: [
-                  [{ text: 'Visit Google Map', url: `${messageData.googleMapsLink}` }],
-                  event?.state !== 'process' ? [{ text: 'Process', callback_data: `process_${action[1]}` }] : [],
-                  [
-                    { text: 'Completed', callback_data: `completed_${action[1]}` },
-                    { text: 'Cancel', callback_data: `cancel_${action[1]}` },
-                  ],
-                ],
-              },
-            }
-          : {
-              reply_markup: {
-                inline_keyboard: [[{ text: 'Visit Google Map', url: `${messageData.googleMapsLink}` }]],
-              },
-            };
+          ? [
+              [{ text: 'Visit Google Map', url: `${messageData.googleMapsLink}` }],
+              event?.state !== 'process' ? [{ text: 'Process', callback_data: `process_${action[1]}` }] : [],
+              [
+                { text: 'Completed', callback_data: `completed_${action[1]}` },
+                { text: 'Cancel', callback_data: `cancel_${action[1]}` },
+              ],
+            ]
+          : [[{ text: 'Visit Google Map', url: `${messageData.googleMapsLink}` }]];
       try {
         logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-        await bot.sendMessage(chatId, messageData.message, {
-          parse_mode: 'Markdown',
-          reply_markup: nestedKeyboard.reply_markup,
-        });
+        await this.sendMessage(botId, chatId, messageData.message, nestedKeyboard);
       } catch (error) {
         logger.info(`Error: ${JSON.stringify(error)}`);
         messageData = await TelegramBotService.writeEventInfo(event, botId, fromId, true);
         logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-        await bot.sendMessage(chatId, messageData.message, {
-          reply_markup: nestedKeyboard.reply_markup,
-        });
+        await this.sendMessage(botId, chatId, messageData.message, nestedKeyboard);
       }
     }
   }
 
   async appointmentComment(action, botId, chatId, fromId) {
-    const { bot } = this.bots[botId];
     const [botLocalInfo, { event, status }] = await Promise.all([
       TelegramBotService.getBotLocalInfo(botId),
       this.checkEventStatus(action[1]),
@@ -580,16 +562,16 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
       botLocalInfo.users[fromId].state = `${action[0]}_${action[1]}_writeComment`;
       await TelegramBotService.updateBotLocalInfo(botId, botLocalInfo);
       logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-      await bot.sendMessage(chatId, 'Please write comment!');
+      await this.sendMessage(botId, chatId, 'Please write comment!');
     } else {
       logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-      await bot.sendMessage(chatId, `This event already ${event?.state}`);
+      await this.sendMessage(botId, chatId, `This event already ${event?.state}`);
     }
   }
 
   // eslint-disable-next-line class-methods-use-this
   async checkEventStatus(eventId) {
-    const event = await calendarRepository.getCalendarEventById(eventId);
+    const event = await calendarEventRepository.getCalendarEventById(eventId);
     if (event?.state === 'completed' || event?.state === 'cancel') {
       return {
         event,
@@ -603,7 +585,6 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
   }
 
   async changeAppointmentStatus(state, botId, chatId, fromId, text = null) {
-    const { bot } = this.bots[botId];
     let statusName = state[0].split('-');
     statusName = statusName.length === 1 ? statusName[0] : statusName[1];
     const [botLocalInfo, { event, status }] = await Promise.all([
@@ -613,7 +594,7 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
     const { comments } = event;
     if (!status) {
       logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-      await bot.sendMessage(chatId, `This event already ${event?.state}`);
+      await this.sendMessage(botId, chatId, `This event already ${event?.state}`);
       return;
     }
     if (
@@ -629,25 +610,29 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
           userName: `${user.firstname} ${user.lastname}`,
         });
       }
-      await calendarRepository.updateCalendarEventByIdNew(state[1], {
-        state: statusName,
-        comments,
-      });
-      // eslint-disable-next-line no-param-reassign
       botLocalInfo.users[fromId].state = `/getapps`;
-      await TelegramBotService.updateBotLocalInfo(botId, botLocalInfo);
-
       logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-      await bot.sendMessage(chatId, `Event status successfuly changed to ${statusName}`);
+      await Promise.all([
+        calendarEventRepository.updateCalendarEventByIdNew(state[1], {
+          state: statusName,
+          comments,
+        }),
+        TelegramBotService.updateBotLocalInfo(botId, botLocalInfo),
+        this.sendMessage(botId, chatId, `Event status successfuly changed to ${statusName}`),
+        BroadcastService.broadcastToProvider(user?.provider?._id?.toString(), 'appointment-update', {
+          data: [],
+        }),
+      ]);
     }
   }
 
   async changeAppointmentStatusAndPrice(action, botId, chatId, fromId, text = null) {
-    const { bot } = this.bots[botId];
     const [botLocalInfo, { event }] = await Promise.all([
       TelegramBotService.getBotLocalInfo(botId),
       this.checkEventStatus(action[1]),
     ]);
+
+    const user = await TelegramBotService.getUserInfo(botLocalInfo.users[fromId].login);
 
     const calendarObj = {
       state: 'completed',
@@ -656,12 +641,15 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
     };
 
     botLocalInfo.users[fromId].state = `/getapps`;
+    logger.info(`send to bot ${JSON.stringify(moment().format())}`);
     await Promise.all([
       TelegramBotService.updateBotLocalInfo(botId, botLocalInfo),
-      calendarRepository.updateCalendarEventByIdNew(action[1], calendarObj),
+      calendarEventRepository.updateCalendarEventByIdNew(action[1], calendarObj),
+      this.sendMessage(botId, chatId, `Event is successfuly completed!`),
+      BroadcastService.broadcastToProvider(user?.provider?._id?.toString(), 'appointment-update', {
+        data: [],
+      }),
     ]);
-    logger.info(`send to bot ${JSON.stringify(moment().format())}`);
-    await bot.sendMessage(chatId, `Event is successfuly completed!`);
   }
 
   isRunning(provider, token) {
@@ -724,20 +712,23 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
     // eslint-disable-next-line no-restricted-syntax
     for (const elem of comments) {
       text += `\n
-        from: ${elem?.userName},
-        content: ${elem?.comment.includes('<p') ? elem?.comment.replace(/<p>|<\/p>/g, '') : elem?.comment},
-        ${elem.isCancel ? 'isCancel: 🔴' : ''}
-        ------------------------------------------------------------
+from: ${elem?.userName},
+content: ${elem?.comment.includes('<p') ? elem?.comment.replace(/<p>|<\/p>/g, '') : elem?.comment},
+${elem.isCancel ? 'isCancel: 🔴' : ''}
+------------------------------------------------------------
       `;
     }
     return text;
   }
 
-  static async connections(locations) {
+  static async connections(locations, login) {
     let connections = '';
     // eslint-disable-next-line no-restricted-syntax
-    for (const item of locations) {
-      connections += `${item.login}\n                   `;
+    const location = locations.filter((item) => item.login === login);
+    // eslint-disable-next-line no-restricted-syntax
+    for (const sub of location[0].packageSubscriptions) {
+      const names = sub.name.filter((item) => item.lang === 'en');
+      connections += names.length ? `${names[0].name}\n` : `${sub.name[0].name}\n`;
     }
     return connections;
   }
@@ -747,8 +738,8 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
     // eslint-disable-next-line no-restricted-syntax
     for (const item of phones) {
       phonesStr += flag
-        ? `\n\t\t\t\t\t\t\t${item?.phone.replace(/[-\s]/g, '')}`
-        : `\n\t\t\t\t\t\t\t[${item?.phone.replace(/[-\s]/g, '')}](tel:${item?.phone.replace(/[-\s]/g, '')})`;
+        ? `\n${item?.phone.replace(/[-\s]/g, '')}`
+        : `\n[${item?.phone.replace(/[-\s]/g, '')}](tel:${item?.phone.replace(/[-\s]/g, '')})`;
     }
     return phonesStr;
   }
@@ -770,25 +761,28 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
       .add(offsetInMinutes, 'minutes')
       .format('YYYY-MM-DDTHH:mm:ss.SSS');
 
-    const address = `${event?.customerAddress?.address}, ${event?.customerAddress?.city}, ${event?.customerAddress?.province}, ${event?.customerAddress?.zip}`;
-    // eslint-disable-next-line no-restricted-syntax
+    const address = `${event?.customerAddress?.address} ${event?.customerAddress?.suite || ''} ${
+      event?.customerAddress?.city
+    } ${event?.customerAddress?.province} ${event?.customerAddress?.zip}`;
 
     const googleMapsLink = `https://www.google.com/maps?q=${encodeURIComponent(address)}`;
     const fullAddress = address;
+
     const [comments, connections, phones] = await Promise.all([
       TelegramBotService.comments(event?.comments),
-      TelegramBotService.connections(event?.client?.info?.locations),
+      TelegramBotService.connections(event?.client?.info?.locations, event?.location?.login),
       TelegramBotService.phones(event?.client?.phones, flag),
     ]);
 
-    const customerFullName = `${event?.customerAddress?.firstname} ${event?.customerAddress?.lastname}`;
+    const clientProviderName = event?.client.provider.name[0].name;
+    const ownerFullName = `${event?.user?.firstname} ${event?.user?.lastname}`;
 
     const location = JSON.stringify(`Name:   ${event?.location?.locationName}
-        Login:   ${event?.location?.login}
-        Password:   ${event?.location?.password}
-        Rooms:   ${event?.location?.roomsCount}`);
+Login:   ${event?.location?.login}
+Password:   ${event?.location?.password}
+Rooms:   ${event?.location?.roomsCount}`);
     const message = JSON.stringify(`EVENT INFO\n
-Event By: ${customerFullName}\n
+Event By: ${ownerFullName}\n
 Equipment Installer: ${event?.equipmentInstaller?.firstname} ${event?.equipmentInstaller?.lastname}\n
 Status: ${event?.state.charAt(0).toUpperCase() + event?.state.slice(1)}
 
@@ -796,14 +790,13 @@ Date: ${moment(startDate, 'YYYY-MM-DDTHH:mm:ss.SSS').format('MM/DD/YYYY')} - ${m
       endDate,
       'YYYY-MM-DDTHH:mm:ss.SSSZ'
     ).format('MM/DD/YYYY')}
-                ${moment(startDate, 'YYYY-MM-DDTHH:mm:ss.SSS').format('h:mm a')} - ${moment(
-      endDate,
-      'YYYY-MM-DDTHH:mm:ss.SSSZ'
-    ).format('h:mm a')}
+${moment(startDate, 'YYYY-MM-DDTHH:mm:ss.SSS').format('h:mm a')} - ${moment(endDate, 'YYYY-MM-DDTHH:mm:ss.SSSZ').format(
+      'h:mm a'
+    )}
 
 Title: ${event?.title}
 
-Customer: ${event?.client?.personalInfo?.firstname} ${event?.client.personalInfo?.lastname}
+Customer: ${event?.client?.personalInfo?.firstname} ${event?.client.personalInfo?.lastname} (${clientProviderName})
 
 Customer Phones: ${phones}
 
@@ -812,7 +805,7 @@ Address: ${fullAddress}
 Location:   ${JSON.parse(location)}
 
 Connections:
-                   ${connections}
+${connections}
 
 Payment Type: ${event?.paymentType} $${event?.paymentPrice}
 
@@ -829,7 +822,7 @@ Comments: ${comments}`);
       return;
     }
     // Create a bot that uses 'polling' to fetch new updates
-    const bot = new TelegramBot(token, { polling: config.polling });
+    const bot = new TelegramBot(token, { polling: config.getConfig().telegram.polling });
 
     bot.setMyCommands([
       { command: '/start', description: 'Start' },
@@ -840,9 +833,9 @@ Comments: ${comments}`);
       date_format: 'DD-MM-YYYY',
       language: 'en',
     });
-    if (!config.polling) {
+    if (!config.getConfig().telegram.polling) {
       // This informs Telegram where to send updates
-      bot.setWebHook(`${config.telegram.webhookurl}?token=${token}`);
+      bot.setWebHook(`${config.getConfig().telegram.webhookurl}?token=${token}`);
     } else {
       bot.onText(/\/\w+|\w+/, async (message) => {
         await this.processTelegramWebhook({
@@ -870,9 +863,128 @@ Comments: ${comments}`);
       calendar,
     };
     logger.info(
-      `telegra bot: bot ${provider}-${token} is running (polling: ${config.polling}, wehookurl: ${config.webhookurl})...`
+      `telegra bot: bot ${provider}-${token} is running (polling: ${config.getConfig().telegram.polling}, wehookurl: ${
+        config.getConfig().telegram.webhookurl
+      })...`
     );
+  }
+
+  async sendMessage(botId, chatId, text, inlineKeyboard = []) {
+    try {
+      const { bot } = this.bots[botId];
+      const response = await bot.sendMessage(chatId, text, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: inlineKeyboard,
+        },
+      });
+      await botMessagesRepository.getBotMessageByChatIdAndPushMessageId(response.chat.id, response.message_id);
+
+      return !!response;
+    } catch (error) {
+      logger.error(`telegramBot sendMessage: ${error.message}`);
+      return false;
+    }
+  }
+
+  async clearHistory({ newUser: user, provider }) {
+    const { id } = user;
+    const botToken = provider[0].telegram.authToken;
+    const botId = `${provider[0].providerId}-${botToken}`;
+
+    const botLocalInfo = await TelegramBotService.getBotLocalInfo(botId);
+    const sameBotProfiles = [];
+
+    // eslint-disable-next-line no-restricted-syntax
+    for (const elem in botLocalInfo.users) {
+      if (botLocalInfo.users[elem].userId && botLocalInfo.users[elem].userId.toString() === id.toString()) {
+        sameBotProfiles.push({
+          fromId: elem,
+          chatId: botLocalInfo.users[elem].chatId,
+        });
+      }
+    }
+
+    // eslint-disable-next-line no-restricted-syntax
+    for (const profile of sameBotProfiles) {
+      if (profile.fromId) {
+        botLocalInfo.users[profile.fromId].loggedIn = false;
+        botLocalInfo.users[profile.fromId].state = null;
+        // eslint-disable-next-line no-await-in-loop
+        await TelegramBotService.updateBotLocalInfo(botId, botLocalInfo);
+      }
+      this.deleteMessagesByCircle(botId, profile.chatId);
+    }
+  }
+
+  async deleteMessagesByCircle(botId, chatId) {
+    const botinfo = this.bots[botId];
+
+    const chatMessages = await botMessagesRepository.getBotMessageByChatId(chatId);
+
+    if (chatMessages) {
+      // eslint-disable-next-line no-restricted-syntax
+      for (const messageId of chatMessages.messageIds) {
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          await botinfo.bot.deleteMessage(chatId, messageId, {
+            GET: ['JSON'],
+          });
+          // eslint-disable-next-line no-empty
+        } catch (error) {}
+      }
+      await botMessagesRepository.BotMessageByIdAndUpdate(chatMessages._id, {
+        messageIds: [],
+      });
+    }
+  }
+
+  async getBotByTokenAndClear(botId) {
+    const { bot } = this.bots[botId];
+    const token = `${botId.split('-')[1]}--${botId.split('-')[3]}`;
+
+    const [botMessages, ottProvider] = await Promise.all([
+      botMessagesRepository.getBotMessagesByBotId(botId),
+      ottProviderConversationProviderRepository.getList(
+        {
+          'telegram.authToken': token,
+        },
+        ['providerId']
+      ),
+    ]);
+
+    const timezoneString = ottProvider[0].providerId.timezone;
+    const offsetInMinutes = moment.tz(timezoneString).utcOffset();
+    const endOfDay = moment.utc().add(offsetInMinutes, 'minutes').endOf('day');
+    const nowDateByProvider = moment.utc().add(offsetInMinutes, 'minutes');
+
+    const min = (endOfDay - nowDateByProvider) / 60000;
+    // eslint-disable-next-line no-restricted-syntax
+    for (const botMessage of botMessages) {
+      const lastClearingDate = botMessage?.lastClearingDate
+        ? moment(botMessage?.lastClearingDate, 'YYYY-MM-DDTHH:mm:ssZ')
+        : 0;
+      const failMin = (nowDateByProvider - lastClearingDate) / 60000;
+
+      if (min <= 10 && failMin > 10) {
+        // eslint-disable-next-line no-restricted-syntax
+        for (const messageId of botMessage.messageIds) {
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            await bot.deleteMessage(botMessage.chatId, messageId, {
+              GET: ['JSON'],
+            });
+            // eslint-disable-next-line no-empty
+          } catch (error) {}
+        }
+        // eslint-disable-next-line no-await-in-loop
+        await botMessagesRepository.BotMessageByIdAndUpdate(botMessage._id, {
+          messageIds: [],
+          lastClearingDate: nowDateByProvider.format(),
+        });
+      }
+    }
   }
 }
 
-module.exports = new TelegramBotService();
+module.exports = TelegramBotService;

@@ -2,12 +2,14 @@
 /* eslint-disable no-await-in-loop */
 // schedule to generate invoices
 const cron = require('node-cron');
-const logger = require('../utils/logger');
-const config = require('../config/env');
+const logger = require('../../../utils/logger/logger');
+const config = require('../../../config');
 // eslint-disable-next-line no-unused-vars
-const telegramBotService = require('../services/telegram.bot.service')
-const StatisticService = require('../services/statistic.service');
-const { ottProviderConversationProviderRepository } = require('ottstream.dataaccess').repositories
+const { ottProviderConversationProviderRepository } = require('../../../repository');
+const serviceCollection = require('../../../services/service_collection');
+const StatisticService = require('../../../services/statistics/statistic.service');
+// const EasyshipService = require('../../services/shiping/merchant/easyship.service');
+// const NotificationService = require('../../services/notification/notification.service');
 
 // eslint-disable-next-line no-unused-vars
 const processTelegramBots = async () => {
@@ -16,6 +18,7 @@ const processTelegramBots = async () => {
   };
   // TODO generate notification of comment and send to user
   // eslint-disable-next-line no-empty
+  const telegramBotService = serviceCollection.getService('telegramBotService');
   try {
     const creds = await ottProviderConversationProviderRepository.getList();
     const validCredsDict = creds.reduce((obj, item) => {
@@ -48,8 +51,21 @@ const processTelegramBots = async () => {
   }
 };
 
+const clearTelegramBots = async () => {
+  try {
+    const telegramBotService = serviceCollection.getService('telegramBotService');
+
+    const allRunning = telegramBotService.getRunnings();
+    for (const item of allRunning) {
+      await telegramBotService.getBotByTokenAndClear(item.key);
+    }
+  } catch (error) {
+    logger.error(error, true);
+  }
+};
+
 const telegramBotProcessorCronWorker = async () => {
-  if (config.processTelegramBots) {
+  if (config.getConfig().hosted.processTelegramBots) {
     logger.info(`cron job: processing telegram bots..`);
     await processTelegramBots();
   }
@@ -63,6 +79,21 @@ const telegramBotProcessorCron = async () => {
   });
 };
 
+const telegramBotClearCronWorker = async () => {
+  if (config.getConfig().hosted.processTelegramBots) {
+    logger.info(`cron job: clearing telegram bots..`);
+    await clearTelegramBots();
+  }
+};
+
+const telegramBotClearCron = async () => {
+  const callMinutes = '*/10 * * * *';
+  cron.schedule(callMinutes, async () => {
+    await telegramBotClearCronWorker();
+  });
+};
+
 module.exports = {
   telegramBotProcessorCron,
+  telegramBotClearCron,
 };
