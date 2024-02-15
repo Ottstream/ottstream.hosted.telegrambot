@@ -9,6 +9,9 @@
     "hosted": "cross-env NODE_ENV=development nodemon --inspect src/hosted.js"
   },
   "keywords": [],
+  "publishConfig": {
+    "registry": "https://npm.ottstream.net/"
+  },
   "author": "",
   "license": "ISC",
   "dependencies": {
