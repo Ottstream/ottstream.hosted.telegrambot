@@ -811,7 +811,7 @@ Location:   ${JSON.parse(location)}
 Connections:
 ${connections}
 
-Payment Type: ${event?.paymentType} $${event?.paymentPrice}
+Payment Type: ${event?.paymentType} ${event?.paymentPrice ? '$'+event?.paymentPrice : ''}
 
 Comments: ${comments}`);
 
