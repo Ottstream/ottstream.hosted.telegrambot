@@ -944,8 +944,7 @@ Comments: ${comments}`);
   }
 
   async getBotByTokenAndClear(botId) {
-    const { bot } = this.bots[botId];
-    const token = `${botId.split('-')[1]}--${botId.split('-')[3]}`;
+    const { bot, token } = this.bots[botId];
 
     const [botMessages, ottProvider] = await Promise.all([
       botMessagesRepository.getBotMessagesByBotId(botId),
@@ -963,6 +962,7 @@ Comments: ${comments}`);
     const nowDateByProvider = moment.utc().add(offsetInMinutes, 'minutes');
 
     const min = (endOfDay - nowDateByProvider) / 60000;
+
     // eslint-disable-next-line no-restricted-syntax
     for (const botMessage of botMessages) {
       const lastClearingDate = botMessage?.lastClearingDate
