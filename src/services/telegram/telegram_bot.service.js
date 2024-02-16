@@ -297,7 +297,7 @@ class TelegramBotService {
             await this.writePriceMsg(action, botId, chatId, fromId);
             break;
           case 'free':
-            await this.changeAppointmentStatusAndPrice(action, botId, chatId, fromId, bot, message.text);
+            await this.changeAppointmentStatusAndPrice(action, botId, chatId, fromId, action[0]);
             break;
           case 'yes-logout':
             bot.deleteMessage(chatId, message.message_id);
@@ -356,12 +356,9 @@ class TelegramBotService {
       await this.logicForLogout(callbackQuery.message, botId);
       return;
     }
-    logger.info(`calendarEventRepository ${JSON.stringify(moment(res, 'DD-MM-YYYY').format())}`);
-    logger.info(`user ${JSON.stringify(user)}`);
     const events = await calendarEventRepository.getCalendarEventByEqInstaller(user, {
       startDate: moment(res, 'DD-MM-YYYY').format(),
     });
-    logger.info(`events ${JSON.stringify(events)}`);
 
     if (!events.length) {
       logger.info(`send to bot ${JSON.stringify(moment().format())}`);
@@ -640,8 +637,8 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
 
     const calendarObj = {
       state: 'completed',
-      paymentType: event?.paymentType !== 'free' ? 'paid' : 'free',
-      paymentPrice: event?.paymentType !== 'free' ? text : 0,
+      paymentType: event?.paymentType !== 'free' && text !== 'free' ? 'paid' : 'free',
+      paymentPaid: event?.paymentType !== 'free' && text !== 'free' ? text : 0,
     };
 
     botLocalInfo.users[fromId].state = `/getapps`;
@@ -811,7 +808,9 @@ Location:   ${JSON.parse(location)}
 Connections:
 ${connections}
 
-Payment Type: ${event?.paymentType} ${event?.paymentPrice ? '$'+event?.paymentPrice : ''}
+Payment status: ${event?.paymentType}
+Expected Pay:  ${event?.paymentPrice ? '$'+event?.paymentPrice : event?.paymentType}
+${event?.paymentPaid ? 'Actual Pay:  $'+event?.paymentPaid : event?.paymentType === 'free' ? 'Actual Pay:  free' : ''}
 
 Comments: ${comments}`);
 
