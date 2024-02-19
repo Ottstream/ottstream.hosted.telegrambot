@@ -955,6 +955,8 @@ Comments: ${comments}`);
       ),
     ]);
 
+    console.log();
+    logger.info(`ottProvider[0]: , ${JSON.stringify(ottProvider[0])}`)
     const timezoneString = ottProvider[0].providerId.timezone;
     const offsetInMinutes = moment.tz(timezoneString).utcOffset();
     logger.info(`offsetInMinutes: ${offsetInMinutes}`)
