@@ -960,10 +960,10 @@ Comments: ${comments}`);
     const timezoneString = ottProvider[0].providerId.timezone;
     const offsetInMinutes = moment.tz(timezoneString).utcOffset();
     logger.info(`offsetInMinutes: ${offsetInMinutes}`)
-    const endOfDay = moment().endOf('day').add(-offsetInMinutes, 'minutes');
+    const endOfDay = moment().add(offsetInMinutes, 'minutes').endOf('day');
     logger.info(`endOfDay: ${endOfDay}`)
-    const nowDateByProvider = moment().add(-offsetInMinutes, 'minutes');
-    logger.info(`moment: ${moment.utc()} ${moment()}`)
+    const nowDateByProvider = moment().add(offsetInMinutes, 'minutes');
+    logger.info(`moment: ${JSON.stringify(moment.utc())} ${JSON.stringify(moment())}`)
     logger.info(`nowDateByProvider: ${nowDateByProvider}`)
 
     const min = (endOfDay - nowDateByProvider) / 60000;
