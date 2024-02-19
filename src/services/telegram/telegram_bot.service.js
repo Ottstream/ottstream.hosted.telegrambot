@@ -961,6 +961,7 @@ Comments: ${comments}`);
     const endOfDay = moment.utc().endOf('day').add(offsetInMinutes, 'minutes');
     logger.info(`endOfDay: ${endOfDay}`)
     const nowDateByProvider = moment.utc().add(offsetInMinutes, 'minutes');
+    logger.info(`moment: ${moment.utc()} ${moment()}`)
     logger.info(`nowDateByProvider: ${nowDateByProvider}`)
 
     const min = (endOfDay - nowDateByProvider) / 60000;
