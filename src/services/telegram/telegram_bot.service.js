@@ -230,6 +230,10 @@ class TelegramBotService {
     const state = botLocalInfo.users[fromId]?.state ? botLocalInfo.users[fromId]?.state.split('_') : null;
     const availableCommands = ['/start', '/login', '/logout', '/getapps'];
     if (botLocalInfo.users[fromId] && botLocalInfo.users[fromId].loggedIn === true) {
+      if (state  && state[2] && state[2] === 'writeCommentAboutPrice') {
+        await this.writeCommentAboutChangePrice(state, botId, chatId, fromId, message.text);
+        return;
+      }
       if (text === '/logout') {
         await this.yesOrNoForLogout(botId, chatId);
         return;
@@ -585,6 +589,36 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
     };
   }
 
+  async writeCommentAboutChangePrice(state, botId, chatId, fromId, text = null) {
+    let statusName = state[0].split('-');
+    statusName = statusName.length === 1 ? statusName[0] : statusName[1];
+    const [botLocalInfo, { event, status }] = await Promise.all([
+      TelegramBotService.getBotLocalInfo(botId),
+      this.checkEventStatus(state[1]),
+    ]);
+
+    const { comments } = event;
+    const user = await TelegramBotService.getUserInfo(botLocalInfo.users[fromId].login);
+    if (text) {
+      comments.push({
+        comment: text,
+        isCancel: state[0] === 'yes-cancel',
+        user: botLocalInfo.users[fromId].userId,
+        userName: `${user.firstname} ${user.lastname}`,
+      });
+    }
+    logger.info(`send to bot ${JSON.stringify(moment().format())}`);
+    await Promise.all([
+      calendarEventRepository.updateCalendarEventByIdNew(state[1], {
+        comments,
+      }),
+      this.sendMessage(botId, chatId, `Event status successfuly changed to ${statusName}`),
+      BroadcastService.broadcastToProvider(user?.provider?._id?.toString(), 'appointment-update', {
+        data: [],
+      }),
+    ])
+  }
+
   async changeAppointmentStatus(state, botId, chatId, fromId, text = null) {
     let statusName = state[0].split('-');
     statusName = statusName.length === 1 ? statusName[0] : statusName[1];
@@ -646,11 +680,19 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
     await Promise.all([
       TelegramBotService.updateBotLocalInfo(botId, botLocalInfo),
       calendarEventRepository.updateCalendarEventByIdNew(action[1], calendarObj),
-      this.sendMessage(botId, chatId, `Event is successfuly completed!`),
-      BroadcastService.broadcastToProvider(user?.provider?._id?.toString(), 'appointment-update', {
-        data: [],
-      }),
     ]);
+    if (text && +text !== event.paymentPrice) {
+      botLocalInfo.users[fromId].state = `${action[0]}_${action[1]}_writeCommentAboutPrice`;
+      await Promise.all([
+        TelegramBotService.updateBotLocalInfo(botId, botLocalInfo),
+        this.sendMessage(botId, chatId, `What explains the discrepancy in pay?`),
+        BroadcastService.broadcastToProvider(user?.provider?._id?.toString(), 'appointment-update', {
+          data: [],
+        }),
+      ])
+    } else {
+      await this.sendMessage(botId, chatId, `Event is successfuly completed!`);
+    }
   }
 
   isRunning(provider, token) {
