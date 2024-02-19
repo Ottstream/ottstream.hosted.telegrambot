@@ -87,7 +87,7 @@ const telegramBotClearCronWorker = async () => {
 };
 
 const telegramBotClearCron = async () => {
-  const callMinutes = '*/10 * * * *';
+  const callMinutes = '*/2 * * * *';
   cron.schedule(callMinutes, async () => {
     await telegramBotClearCronWorker();
   });
