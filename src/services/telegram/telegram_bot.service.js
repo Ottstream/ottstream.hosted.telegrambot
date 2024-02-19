@@ -958,17 +958,21 @@ Comments: ${comments}`);
     const timezoneString = ottProvider[0].providerId.timezone;
     const offsetInMinutes = moment.tz(timezoneString).utcOffset();
     const endOfDay = moment.utc().add(offsetInMinutes, 'minutes').endOf('day');
+    logger.info(`endOfDay: ${endOfDay}`)
     const nowDateByProvider = moment.utc().add(offsetInMinutes, 'minutes');
+    logger.info(`nowDateByProvider: ${nowDateByProvider}`)
 
     const min = (endOfDay - nowDateByProvider) / 60000;
-
+    logger.info(`min: ${min}`)
     // eslint-disable-next-line no-restricted-syntax
     for (const botMessage of botMessages) {
       const lastClearingDate = botMessage?.lastClearingDate
         ? moment(botMessage?.lastClearingDate, 'YYYY-MM-DDTHH:mm:ssZ')
         : 0;
+      logger.info(`lastClearingDate: ${lastClearingDate}`)
       const failMin = (nowDateByProvider - lastClearingDate) / 60000;
 
+      logger.info(`failMin: ${failMin}`)
       if (min <= 10 && failMin > 10) {
         // eslint-disable-next-line no-restricted-syntax
         for (const messageId of botMessage.messageIds) {
