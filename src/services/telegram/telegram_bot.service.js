@@ -42,7 +42,7 @@ class TelegramBotService {
       'telegram.authToken': token,
     });
     const botId = `${ottProvider[0].providerId}-${token}`;
-    let messages = await botMessagesRepository.getBotMessageByChatId(chatId);
+    let messages = await botMessagesRepository.getBotMessageByChatId({ botId, chatId });
     if (messages) {
       messages = await botMessagesRepository.getBotMessageByChatIdAndPushMessageId(chatId, lastMessageId);
     } else {
@@ -923,7 +923,7 @@ Comments: ${comments}`);
   async deleteMessagesByCircle(botId, chatId) {
     const botinfo = this.bots[botId];
 
-    const chatMessages = await botMessagesRepository.getBotMessageByChatId(chatId);
+    const chatMessages = await botMessagesRepository.getBotMessageByChatId({ botId, chatId });
 
     if (chatMessages) {
       // eslint-disable-next-line no-restricted-syntax
@@ -950,34 +950,32 @@ Comments: ${comments}`);
       ottProviderConversationProviderRepository.getList(
         {
           'telegram.authToken': token,
+          'telegram.isValid': true,
         },
         ['providerId']
       ),
     ]);
 
-    console.log();
-    logger.info(`ottProvider[0]: , ${JSON.stringify(ottProvider[0])}`)
     const timezoneString = ottProvider[0].providerId.timezone;
     const offsetInMinutes = moment.tz(timezoneString).utcOffset();
-    logger.info(`offsetInMinutes: ${offsetInMinutes}`)
-    const endOfDay = moment().add(offsetInMinutes, 'minutes').endOf('day');
-    logger.info(`endOfDay: ${endOfDay}`)
-    const nowDateByProvider = moment().add(offsetInMinutes, 'minutes');
-    logger.info(`moment: ${JSON.stringify(moment.utc())} ${JSON.stringify(moment())}`)
-    logger.info(`nowDateByProvider: ${nowDateByProvider}`)
+
+    const endOfDay = moment.utc().add(offsetInMinutes, 'minutes').endOf('day');
+
+    const nowDateByProvider = moment.utc().add(offsetInMinutes, 'minutes');
 
     const min = (endOfDay - nowDateByProvider) / 60000;
-    logger.info(`min: ${min}`)
+    logger.info(`nowDateByProvider: ${nowDateByProvider}, endOfDay: ${endOfDay}, min: ${min}`)
+
     // eslint-disable-next-line no-restricted-syntax
     for (const botMessage of botMessages) {
       const lastClearingDate = botMessage?.lastClearingDate
         ? moment.utc(botMessage?.lastClearingDate, 'YYYY-MM-DDTHH:mm:ssZ')
         : 0;
-      logger.info(`lastClearingDate: ${lastClearingDate}`)
-      const failMin = (nowDateByProvider - lastClearingDate) / 60000;
 
-      logger.info(`failMin: ${failMin}`)
-      if (min > 10 && failMin < 10) {
+      const failMin = (nowDateByProvider - lastClearingDate) / 60000;
+      logger.info(`lastClearingDate: ${lastClearingDate}, failMin: ${failMin}`)
+
+      if (min <= 10 && failMin > 10) {
         // eslint-disable-next-line no-restricted-syntax
         for (const messageId of botMessage.messageIds) {
           try {
