@@ -977,7 +977,7 @@ Comments: ${comments}`);
       const failMin = (nowDateByProvider - lastClearingDate) / 60000;
 
       logger.info(`failMin: ${failMin}`)
-      if (min <= 10 && failMin > 10) {
+      if (min <= 10) {
         // eslint-disable-next-line no-restricted-syntax
         for (const messageId of botMessage.messageIds) {
           try {
