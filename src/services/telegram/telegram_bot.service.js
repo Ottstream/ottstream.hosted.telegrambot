@@ -27,6 +27,12 @@ class TelegramBotService {
       await this.clearHistory(body);
       return;
     }
+
+    if (body.createAppointment) {
+      await this.sendAboutNewAppointment(body);
+      return;
+    }
+
     // eslint-disable-next-line camelcase
     const { token, message, callback_query } = body;
     const text = message?.text;
@@ -1033,6 +1039,19 @@ Comments: ${comments}`);
           messageIds: [],
           lastClearingDate: nowDateByProvider.format(),
         });
+      }
+    }
+  }
+
+  async sendAboutNewAppointment(data) {
+    const { calendarEvent, conversationProvider } = data;
+    const userId = calendarEvent.equipmentInstaller.id.toString()
+    const botToken = conversationProvider[0].telegram.authToken;
+    const botId = `${conversationProvider[0].providerId}-${botToken}`;
+    const botInfo = await TelegramBotService.getBotLocalInfo(botId);
+    for (const key in botInfo.users) {
+      if (botInfo.users[key]?.userId && botInfo.users[key]?.userId.toString() === userId) {
+        await this.sendMessage(botId, botInfo.users[key].chatId, "You have a new Appointment!")
       }
     }
   }
