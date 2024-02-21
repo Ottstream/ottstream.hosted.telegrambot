@@ -613,7 +613,7 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
         userName: `${user.firstname} ${user.lastname}`,
       });
     }
-    logger.info(`send to bot ${JSON.stringify(moment().format())}`);
+    logger.info(`send to bot 2 ${JSON.stringify(moment().format())}`);
     await Promise.all([
       calendarEventRepository.updateCalendarEventByIdNew(state[1], {
         comments,
@@ -652,7 +652,7 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
         });
       }
       botLocalInfo.users[fromId].state = `/getapps`;
-      logger.info(`send to bot ${JSON.stringify(moment().format())}`);
+      logger.info(`send to bot 1 ${JSON.stringify(moment().format())}`);
       await Promise.all([
         calendarEventRepository.updateCalendarEventByIdNew(state[1], {
           state: statusName,
@@ -682,19 +682,19 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
     };
 
     botLocalInfo.users[fromId].state = `/getapps`;
-    logger.info(`send to bot ${JSON.stringify(moment().format())}`);
+    logger.info(`send to bot 3 ${JSON.stringify(moment().format())}`);
     await Promise.all([
       TelegramBotService.updateBotLocalInfo(botId, botLocalInfo),
       calendarEventRepository.updateCalendarEventByIdNew(action[1], calendarObj),
+      BroadcastService.broadcastToProvider(user?.provider?._id?.toString(), 'appointment-update', {
+        data: [],
+      }),
     ]);
     if (text && +text !== event.paymentPrice) {
       botLocalInfo.users[fromId].state = `${action[0]}_${action[1]}_writeCommentAboutPrice`;
       await Promise.all([
         TelegramBotService.updateBotLocalInfo(botId, botLocalInfo),
         this.sendMessage(botId, chatId, `What explains the discrepancy in pay?`),
-        BroadcastService.broadcastToProvider(user?.provider?._id?.toString(), 'appointment-update', {
-          data: [],
-        }),
       ])
     } else {
       await this.sendMessage(botId, chatId, `Event is successfuly completed!`);
@@ -931,9 +931,21 @@ Comments: ${comments}`);
       });
       await botMessagesRepository.getBotMessageByChatIdAndPushMessageId(response.chat.id, response.message_id);
 
-      return !!response;
+      return response;
     } catch (error) {
       logger.error(`telegramBot sendMessage: ${error.message}`);
+      return false;
+    }
+  }
+
+  async pinChatMessage(botId, chatId, messageId) {
+    try {
+      const { bot } = this.bots[botId];
+      const response = await bot.pinChatMessage(chatId, messageId);
+
+      return !!response;
+    } catch (error) {
+      logger.error(`telegramBot pinChatMessage: ${error.message}`);
       return false;
     }
   }
@@ -1051,7 +1063,9 @@ Comments: ${comments}`);
     const botInfo = await TelegramBotService.getBotLocalInfo(botId);
     for (const key in botInfo.users) {
       if (botInfo.users[key]?.userId && botInfo.users[key]?.userId.toString() === userId) {
-        await this.sendMessage(botId, botInfo.users[key].chatId, "You have a new Appointment!")
+        const nestedKeyboard = [[{ text: 'Info', callback_data: `info_${calendarEvent.id}` }]]
+        const result = await this.sendMessage(botId, botInfo.users[key].chatId, "You have a new Appointment!", nestedKeyboard)
+        await this.pinChatMessage(botId, botInfo.users[key].chatId, result.message_id)
       }
     }
   }
