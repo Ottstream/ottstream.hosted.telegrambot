@@ -492,9 +492,13 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
 
     // Get the current offset in minutes
     const offsetInMinutes = moment.tz(timezoneString).utcOffset();
+
     const startDate = moment.utc(event?.startDate, 'YYYY-MM-DDTHH:mm:ss.SSSZ').add(offsetInMinutes, 'minutes');
-    const nowDay = moment.utc().format('YYYY-MM-DD');
+
+    const nowDay = moment.utc().add(offsetInMinutes, 'minutes').format('YYYY-MM-DD');
+
     const getDay = startDate.format('YYYY-MM-DD');
+
     const nestedKeyboard =
       // eslint-disable-next-line no-nested-ternary
       event?.state === 'completed' || event?.state === 'cancel' || nowDay > getDay
@@ -535,7 +539,9 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
       // Get the current offset in minutes
       const offsetInMinutes = moment.tz(timezoneString).utcOffset();
       const startDate = moment.utc(event?.startDate, 'YYYY-MM-DDTHH:mm:ss.SSSZ').add(offsetInMinutes, 'minutes');
-      const nowDay = moment.utc().format('YYYY-MM-DD');
+
+      const nowDay = moment.utc().add(offsetInMinutes, 'minutes').format('YYYY-MM-DD');
+
       const getDay = startDate.format('YYYY-MM-DD');
 
       let messageData = await TelegramBotService.writeEventInfo(event, botId, fromId);
