@@ -613,7 +613,7 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
     const user = await TelegramBotService.getUserInfo(botLocalInfo.users[fromId].login);
     if (text) {
       comments.push({
-        comment: text,
+        comment: `\nprice changed:\n  ${text}`,
         isCancel: state[0] === 'yes-cancel',
         user: botLocalInfo.users[fromId].userId,
         userName: `${user.firstname} ${user.lastname}`,
