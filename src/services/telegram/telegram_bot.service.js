@@ -32,6 +32,11 @@ class TelegramBotService {
       await this.sendAboutNewAppointment(body);
       return;
     }
+    if (body.updateAppointment) {
+      console.log('body: ', body);
+      await this.sendAboutChangewAppointment(body);
+      return;
+    }
 
     // eslint-disable-next-line camelcase
     const { token, message, callback_query } = body;
@@ -259,7 +264,7 @@ class TelegramBotService {
         if (!validDate) {
           return;
         }
-        await this.getEventList(action, botId, chatId, fromId, callbackQuery);
+        await this.callForEventList(action, botId, chatId, fromId, callbackQuery);
         return;
       }
       if (action) {
@@ -352,7 +357,7 @@ class TelegramBotService {
     await this.sendMessage(botId, chatId, 'Please Confirm!', nestedKeyboard);
   }
 
-  async getEventList(action, botId, chatId, fromId, callbackQuery) {
+  async callForEventList(action, botId, chatId, fromId, callbackQuery) {
     const { calendar } = this.bots[botId];
     const botLocalInfo = await TelegramBotService.getBotLocalInfo(botId);
     const validDate = moment(action[1], 'DD-MM-YYYY').isValid();
@@ -366,6 +371,10 @@ class TelegramBotService {
       await this.logicForLogout(callbackQuery.message, botId);
       return;
     }
+    await this.getEventList(botId, chatId, user, res)
+  }
+
+  async getEventList(botId, chatId, user, res) {
     const events = await calendarEventRepository.getCalendarEventByEqInstaller(user, {
       startDate: moment(res, 'DD-MM-YYYY').format(),
     });
@@ -683,7 +692,7 @@ ${event?.customerAddress.city}, ${event?.customerAddress.province}`;
 
     const calendarObj = {
       state: 'completed',
-      paymentType: event?.paymentType !== 'free' && text !== 'free' ? 'paid' : 'free',
+      // paymentType: event?.paymentType !== 'free' && text !== 'free' ? 'paid' : 'free',
       paymentPaid: event?.paymentType !== 'free' && text !== 'free' ? text : 0,
     };
 
@@ -863,7 +872,7 @@ Connections:
 ${connections}
 
 Payment status: ${event?.paymentType}
-Expected Pay:  ${event?.paymentPrice ? '$'+event?.paymentPrice : event?.paymentType}
+Expected Pay:  ${event?.paymentPrice ? '$'+event?.paymentPrice : event?.paymentType} ${event?.paymentType === 'pending' ? ' or free' : ''}
 ${event?.paymentPaid ? 'Actual Pay:  $'+event?.paymentPaid : event?.paymentType === 'free' ? 'Actual Pay:  free' : ''}
 
 Comments: ${comments}`);
@@ -934,7 +943,15 @@ Comments: ${comments}`);
         reply_markup: {
           inline_keyboard: inlineKeyboard,
         },
-      });
+      }).catch((error) => {
+        if (error.response && error.response.body && error.response.body.error_code === 429) {
+            const retryAfter = error.response.body.parameters.retry_after;
+            console.log(`Rate limit hit, retrying after ${retryAfter} seconds`);
+            setTimeout(() => this.sendMessage(chatId, text, inlineKeyboard), retryAfter * 1000); // Convert to milliseconds
+        } else {
+            console.error('Failed to send message', error);
+        }
+    });
       await botMessagesRepository.getBotMessageByChatIdAndPushMessageId(response.chat.id, response.message_id);
 
       return response;
@@ -947,8 +964,8 @@ Comments: ${comments}`);
   async pinChatMessage(botId, chatId, messageId) {
     try {
       const { bot } = this.bots[botId];
-      const response = await bot.pinChatMessage(chatId, messageId);
-
+      const response = bot.pinChatMessage(chatId, messageId)
+      await botMessagesRepository.getBotMessageByChatIdAndPushMessageId(chatId, messageId+1);
       return !!response;
     } catch (error) {
       logger.error(`telegramBot pinChatMessage: ${error.message}`);
@@ -1025,14 +1042,13 @@ Comments: ${comments}`);
     const timezoneString = ottProvider[0].providerId.timezone;
     const offsetInMinutes = moment.tz(timezoneString).utcOffset();
 
-    const endOfDay = moment.utc().add(offsetInMinutes, 'minutes').endOf('day');
+    const startOfDay = moment.utc().add(offsetInMinutes, 'minutes').startOf('day');
 
     const nowDateByProvider = moment.utc().add(offsetInMinutes, 'minutes');
 
-    const min = (endOfDay - nowDateByProvider) / 60000;
-    logger.info(`nowDateByProvider: ${nowDateByProvider}, endOfDay: ${endOfDay}, min: ${min}`)
+    const min = (nowDateByProvider - startOfDay) / 60000;
+    logger.info(`nowDateByProvider: ${nowDateByProvider}, startOfDay: ${startOfDay}, min: ${min}`)
 
-    // eslint-disable-next-line no-restricted-syntax
     for (const botMessage of botMessages) {
       const lastClearingDate = botMessage?.lastClearingDate
         ? moment.utc(botMessage?.lastClearingDate, 'YYYY-MM-DDTHH:mm:ssZ')
@@ -1042,36 +1058,100 @@ Comments: ${comments}`);
       logger.info(`lastClearingDate: ${lastClearingDate}, failMin: ${failMin}`)
 
       if (min <= 10 && failMin > 10) {
-        // eslint-disable-next-line no-restricted-syntax
+        try {
+          await bot.unpinAllChatMessages(botMessage.chatId)
+        } catch (error) {}
         for (const messageId of botMessage.messageIds) {
           try {
-            // eslint-disable-next-line no-await-in-loop
             await bot.deleteMessage(botMessage.chatId, messageId, {
               GET: ['JSON'],
             });
-            // eslint-disable-next-line no-empty
           } catch (error) {}
         }
-        // eslint-disable-next-line no-await-in-loop
         await botMessagesRepository.BotMessageByIdAndUpdate(botMessage._id, {
           messageIds: [],
           lastClearingDate: nowDateByProvider.format(),
         });
+        const day = nowDateByProvider.format('DD-MM-YYYY');
+        const botLocalInfo = await TelegramBotService.getBotLocalInfo(botId);
+        if (botLocalInfo.users[botMessage.chatId].loggedIn) {
+          const user = await TelegramBotService.getUserInfo(botLocalInfo.users[botMessage.chatId].login);
+          await this.getEventList(botId, botMessage.chatId, user, day)
+        }
       }
     }
   }
 
   async sendAboutNewAppointment(data) {
     const { calendarEvent, conversationProvider } = data;
+    console.log('calendarEvent.equipmentInstaller: ', calendarEvent.equipmentInstaller);
     const userId = calendarEvent.equipmentInstaller.id.toString()
     const botToken = conversationProvider[0].telegram.authToken;
     const botId = `${conversationProvider[0].providerId}-${botToken}`;
     const botInfo = await TelegramBotService.getBotLocalInfo(botId);
+    let userLogin = null;
+    for (const key in botInfo.users) {
+      if (botInfo.users[key]?.userId && botInfo.users[key]?.userId.toString() === userId) {
+        userLogin = botInfo.users[key].login
+      }
+    }
+    const user = userLogin ? await TelegramBotService.getUserInfo(userLogin) : null;
+
+    const timezoneString = user ? user.provider.timezone : null;
+    const offsetInMinutes = timezoneString ? moment.tz(timezoneString).utcOffset() : 0;
+
+    const startTime = moment.utc(calendarEvent.startDate, '').add(offsetInMinutes, 'minutes').format('hh:mm A');
+    const endTime = moment.utc(calendarEvent.endDate, '').add(offsetInMinutes, 'minutes').format('hh:mm A');
     for (const key in botInfo.users) {
       if (botInfo.users[key]?.userId && botInfo.users[key]?.userId.toString() === userId) {
         const nestedKeyboard = [[{ text: 'Info', callback_data: `info_${calendarEvent.id}` }]]
-        const result = await this.sendMessage(botId, botInfo.users[key].chatId, "You have a new Appointment!", nestedKeyboard)
+        const result = await this.sendMessage(botId, botInfo.users[key].chatId, `You have a New Appointment: From ${startTime} to ${endTime}!`, nestedKeyboard)
         await this.pinChatMessage(botId, botInfo.users[key].chatId, result.message_id)
+      }
+    }
+  }
+
+  async sendAboutChangewAppointment(data) {
+    const { eventId, installerChange, installers, changeDate, dates, changeCustomerAddress, addresses, conversationProvider } = data;
+    const botId = `${conversationProvider[0].providerId}-${conversationProvider[0].telegram.authToken}`;
+    const botInfo = await TelegramBotService.getBotLocalInfo(botId);
+    const event = await calendarEventRepository.getCalendarEventById(eventId);
+    if (installerChange) {
+      for (const key in botInfo.users) {
+        if (botInfo.users[key]?.userId && botInfo.users[key]?.userId.toString() === installers.oldInstaller) {
+          await this.sendMessage(botId, botInfo.users[key].chatId, `Your ${event.title} appointment has been reassigned to another installer.`)
+        }
+        if (botInfo.users[key]?.userId && botInfo.users[key]?.userId.toString() === installers.newInstaller) {
+          await this.sendAboutNewAppointment({
+            calendarEvent: event,
+            conversationProvider
+          })
+        }
+      }
+    } else {
+      let text = '';
+      if (changeDate) {
+        const user = await TelegramBotService.getUserInfo(event.equipmentInstaller.telegramLogin);
+        const timezoneString = user.provider.timezone;
+
+        // Get the current offset in minutes
+        const offsetInMinutes = moment.tz(timezoneString).utcOffset();
+        text += `\nAppointment Date updated\nFrom: ${moment.utc(dates.oldDate, 'YYYY-MM-DDTHH:mm:ss.SSSZ').add(offsetInMinutes, 'minutes').format('hh:mm A on DD MMM YYYY')}\nTo: ${moment.utc(dates.newDate, 'YYYY-MM-DDTHH:mm:ss.SSSZ').add(offsetInMinutes, 'minutes').format('hh:mm A on DD MMM YYYY')}\n__________________`
+      }
+      if (changeCustomerAddress) {
+        const oldAddress = `${addresses.oldAddress?.address} ${addresses.oldAddress?.suite || ''} ${
+          addresses.oldAddress?.city
+        } ${addresses.oldAddress?.province} ${addresses.oldAddress?.zip}`;
+        const newAddress = `${addresses.newAddress?.address} ${addresses.newAddress?.suite || ''} ${
+          addresses.newAddress?.city
+        } ${addresses.newAddress?.province} ${addresses.newAddress?.zip}`
+        text += `\nAppointment address updated\nFrom: ${oldAddress}\nTo: ${newAddress}\n__________________`
+      }
+      for (const key in botInfo.users) {
+        if (botInfo.users[key]?.userId && botInfo.users[key]?.userId.toString() === event.equipmentInstaller.id.toString()) {
+          const result = await this.sendMessage(botId, botInfo.users[key].chatId, text);
+          await this.pinChatMessage(botId, botInfo.users[key].chatId, result.message_id)
+        }
       }
     }
   }
