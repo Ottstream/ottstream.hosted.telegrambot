@@ -951,7 +951,7 @@ Comments: ${comments}`);
         } else {
             console.error('Failed to send message', error);
         }
-    });
+      });
       await botMessagesRepository.getBotMessageByChatIdAndPushMessageId(response.chat.id, response.message_id);
 
       return response;
@@ -1017,7 +1017,9 @@ Comments: ${comments}`);
             GET: ['JSON'],
           });
           // eslint-disable-next-line no-empty
-        } catch (error) {}
+        } catch (error) {
+          logger.error(`deleteMessagesByCircle: ${error.message}`)
+        }
       }
       await botMessagesRepository.BotMessageByIdAndUpdate(chatMessages._id, {
         messageIds: [],
@@ -1060,13 +1062,17 @@ Comments: ${comments}`);
       if (min <= 10 && failMin > 10) {
         try {
           await bot.unpinAllChatMessages(botMessage.chatId)
-        } catch (error) {}
+        } catch (error) {
+          logger.error(`unpinAllChatMessages: ${error.message}`)
+        }
         for (const messageId of botMessage.messageIds) {
           try {
             await bot.deleteMessage(botMessage.chatId, messageId, {
               GET: ['JSON'],
             });
-          } catch (error) {}
+          } catch (error) {
+            logger.error(`deleteMessage: ${error.message}`)
+          }
         }
         await botMessagesRepository.BotMessageByIdAndUpdate(botMessage._id, {
           messageIds: [],
