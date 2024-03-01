@@ -1,0 +1,49 @@
+
+# This workflow will do a clean installation of node dependencies, cache/restore them, build the source code and run tests across different versions of node
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-nodejs
+
+name: Node.js CI
+
+on:
+  pull_request:
+    branches:
+      - develop
+    types: [closed]
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+      with:
+        ref: develop
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v1
+      with:
+        username: ${{ secrets.HUB_USER }}
+        password: ${{ secrets.HUB_PASS }}
+
+    - name: Build and push Docker image
+      run: |
+        docker build -t api.telegram.dev -f Dockerfile .
+        docker tag api.telegram.dev ottstream/api.telegram.dev
+        docker push ottstream/api.telegram.dev
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+    - name: Deploy to Server
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.DEPLOY_HOST }}
+        username: ${{ secrets.DEPLOY_USER }}
+        password: ${{ secrets.DEPLOY_PASS }}
+        script: |
+          cd /home/admin/docker/dev_ottstream_live/telegrambot/
+          echo "${{ secrets.HUB_PASS }}" | docker login -u "${{ secrets.HUB_USER }}" --password-stdin
+          docker compose down
+          docker rmi ottstream/api.telegram.dev
+          docker pull ottstream/api.telegram.dev
+          docker compose up -d
